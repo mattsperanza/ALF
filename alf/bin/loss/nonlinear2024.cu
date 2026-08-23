@@ -87,14 +87,14 @@ struct_plmd* setup(int argc, char *argv[])
   FILE *fp;
   char line[MAXLENGTH];
 
-  if (argc<5) {
+  if (argc<5) { // args = [program_name, bias potential type, temperature, do multisite coupling flag, do multisite profiles, ]
     fprintf(stderr,"Error: not enough input arguments\n");
     exit(1);
   }
 
   plmd=(struct_plmd*) malloc(sizeof(struct_plmd));
 
-  fp=fopen("nsubs","r");
+  fp=fopen("nsubs","r"); // nsubs file is required
   plmd->nsites=0;
   while (fscanf(fp,"%d",&i)==1) {
     plmd->nsites++;
@@ -111,7 +111,7 @@ struct_plmd* setup(int argc, char *argv[])
   }
   fclose(fp);
 
-  plmd->block0=(int*) calloc(plmd->nsites+1,sizeof(int));
+  plmd->block0=(int*) calloc(plmd->nsites+1,sizeof(int)); // site bounds into nblocks
   plmd->block2site=(int*) calloc(plmd->nblocks,sizeof(int));
   k=0;
   for(i=0; i<plmd->nsites; i++) {
@@ -149,14 +149,14 @@ struct_plmd* setup(int argc, char *argv[])
   plmd->kT=kB*temperature;
   c++;
 
-  i=sscanf(argv[c],"%d",&plmd->ms);
+  i=sscanf(argv[c],"%d",&plmd->ms); // ms = {0,1,2}; 0 -> no coupling | 1 -> full coupling | 2 -> just c parameter coupling
   if (i!=1) {
     fprintf(stderr,"Error, argument %d must be a boolean flag for whether to use multisite coupling\n",c);
     exit(1);
   }
   c++;
 
-  i=sscanf(argv[c],"%d",&plmd->msprof);
+  i=sscanf(argv[c],"%d",&plmd->msprof); // msprof = {0, 1}; boolean whether to compute multi-site pathways
   if (i!=1) {
     fprintf(stderr,"Error, argument %d should indicate whether to use multisite profiles.\n",c);
     exit(1);
@@ -164,16 +164,16 @@ struct_plmd* setup(int argc, char *argv[])
   c++;
 
   fp=fopen("Lambda/Lambda.dat","r");
-  for (plmd->B=0; fgets(line,MAXLENGTH,fp) != NULL; plmd->B++) {
+  for (plmd->B=0; fgets(line,MAXLENGTH,fp) != NULL; plmd->B++) { // count samples 
     ;
   }
   fprintf(stdout,"%d frames\n",plmd->B); // DEBUG
   fclose(fp);
 
-  plmd->lambda=(real*) calloc(plmd->B*plmd->nblocks,sizeof(real));
-  plmd->ensweight=(real*) calloc(plmd->B,sizeof(real));
-  plmd->mc_lambda=(real*) calloc(plmd->B*plmd->nblocks,sizeof(real));
-  plmd->mc_ensweight=(real*) calloc(plmd->B,sizeof(real));
+  plmd->lambda=(real*) calloc(plmd->B*plmd->nblocks,sizeof(real)); // lambda history/trajectory
+  plmd->ensweight=(real*) calloc(plmd->B,sizeof(real)); // sample MBAR weights
+  plmd->mc_lambda=(real*) calloc(plmd->B*plmd->nblocks,sizeof(real)); // mc trajectory
+  plmd->mc_ensweight=(real*) calloc(plmd->B,sizeof(real)); // sample weights
 
   fp=fopen("Lambda/Lambda.dat","r");
   for (i=0;i<plmd->B;i++) {
@@ -233,18 +233,18 @@ struct_plmd* setup(int argc, char *argv[])
   // count nbias
   int ntriangle;
   if (plmd->bias==bcxs2018) {
-    ntriangle=5;
+    ntriangle=5; // 1c + 2x + 2s biases
   } else if (plmd->bias==bcxstu2026) {
-    ntriangle=9;
+    ntriangle=9; // 1c + 2x + 2s + 2t + 2u biases
   }
   plmd->nbias=0;
   for (i=0; i<plmd->nsites; i++) {
     for (j=i; j<plmd->nsites; j++) {
-      if (i==j) {
+      if (i==j) { // intra-site, linear + ntriangle upper triangular matrices (nsub X nsub)
         plmd->nbias+=plmd->nsubs[i]+(ntriangle*plmd->nsubs[i]*(plmd->nsubs[i]-1))/2;
-      } else if (plmd->ms==1) {
+      } else if (plmd->ms==1) { // inter-site, couple all ntriangle biases 
         plmd->nbias+=ntriangle*plmd->nsubs[i]*plmd->nsubs[j];
-      } else if (plmd->ms==2) {
+      } else if (plmd->ms==2) { // inter-site, couple just c 
         plmd->nbias+=plmd->nsubs[i]*plmd->nsubs[j];
       }
     }
@@ -255,12 +255,12 @@ struct_plmd* setup(int argc, char *argv[])
   for (i=0; i<plmd->nsites; i++) {
     for (j=i; j<plmd->nsites; j++) {
       if (i==j) {
-        if (plmd->nsubs[i]==2) {
+        if (plmd->nsubs[i]==2) { // 2 marginals and 1 direct path
           plmd->nprof+=plmd->nsubs[i]+plmd->nsubs[i]*(plmd->nsubs[i]-1)/2;
-        } else {
+        } else { // 1D marginals + 1D direct paths + 2D intermediates
           plmd->nprof+=plmd->nsubs[i]+2*plmd->nsubs[i]*(plmd->nsubs[i]-1)/2;
         }
-      } else if (plmd->msprof) {
+      } else if (plmd->msprof) { // 2D intermediates for all subs in site i with all subs in site j
         plmd->nprof+=plmd->nsubs[i]*plmd->nsubs[j];
       }
     }
@@ -275,12 +275,12 @@ struct_plmd* setup(int argc, char *argv[])
   plmd->xr=(real*) calloc(plmd->nx,sizeof(real));
   real *xr_x, *xr_s, *xr_t, *xr_u;
   // load starting values if needed for ms==1
-  if (plmd->ms==1) {
+  if (plmd->ms==1) { // full coupling
     readbias("x_prev.dat",plmd->nblocks,&xr_x);
     readbias("s_prev.dat",plmd->nblocks,&xr_s);
     if (plmd->bias==bcxstu2026) {
-    readbias("t_prev.dat",plmd->nblocks,&xr_t);
-    readbias("u_prev.dat",plmd->nblocks,&xr_u);
+      readbias("t_prev.dat",plmd->nblocks,&xr_t);
+      readbias("u_prev.dat",plmd->nblocks,&xr_u);
     }
   }
   // k0=1e-2; // 1.0/400;
@@ -289,7 +289,8 @@ struct_plmd* setup(int argc, char *argv[])
   k=0;
   for (si=0; si<plmd->nsites; si++) {
     for (sj=si; sj<plmd->nsites; sj++) {
-      if (si==sj) {
+      // intra-site
+      if (si==sj) { 
         for (i=0; i<plmd->nsubs[si]; i++) {
           plmd->kx[k++]=k0/4; // b
           for (j=i+1; j<plmd->nsubs[sj]; j++) {
@@ -299,18 +300,19 @@ struct_plmd* setup(int argc, char *argv[])
             plmd->kx[k++]=k0/1; // s
             plmd->kx[k++]=k0/1; // s
             if (plmd->bias==bcxstu2026) {
-            plmd->kx[k++]=k0/1; // t
-            plmd->kx[k++]=k0/1; // t
-            plmd->kx[k++]=k0/1; // u
-            plmd->kx[k++]=k0/1; // u
+              plmd->kx[k++]=k0/1; // t
+              plmd->kx[k++]=k0/1; // t
+              plmd->kx[k++]=k0/1; // u
+              plmd->kx[k++]=k0/1; // u
             }
           }
         }
+      // multi-site 
       } else if (plmd->ms) {
         for (i=0; i<plmd->nsubs[si]; i++) {
           for (j=0; j<plmd->nsubs[sj]; j++) {
             plmd->kx[k++]=k0/4; // c
-            if (plmd->ms==1) {
+            if (plmd->ms==1) { // full coupling
               plmd->xr[k]=xr_x[(plmd->block0[si]+i)*plmd->nblocks+plmd->block0[sj]+j]; // x
               plmd->kx[k++]=k0/0.25; // x
               plmd->xr[k]=xr_x[(plmd->block0[sj]+j)*plmd->nblocks+plmd->block0[si]+i]; // x
@@ -320,14 +322,14 @@ struct_plmd* setup(int argc, char *argv[])
               plmd->xr[k]=xr_s[(plmd->block0[sj]+j)*plmd->nblocks+plmd->block0[si]+i]; // s
               plmd->kx[k++]=k0/0.25; // s
               if (plmd->bias==bcxstu2026) {
-              plmd->xr[k]=xr_t[(plmd->block0[si]+i)*plmd->nblocks+plmd->block0[sj]+j]; // t
-              plmd->kx[k++]=k0/0.0025; // t
-              plmd->xr[k]=xr_t[(plmd->block0[sj]+j)*plmd->nblocks+plmd->block0[si]+i]; // t
-              plmd->kx[k++]=k0/0.0025; // t
-              plmd->xr[k]=xr_u[(plmd->block0[si]+i)*plmd->nblocks+plmd->block0[sj]+j]; // u
-              plmd->kx[k++]=k0/0.0025; // u
-              plmd->xr[k]=xr_u[(plmd->block0[sj]+j)*plmd->nblocks+plmd->block0[si]+i]; // u
-              plmd->kx[k++]=k0/0.0025; // u
+                plmd->xr[k]=xr_t[(plmd->block0[si]+i)*plmd->nblocks+plmd->block0[sj]+j]; // t
+                plmd->kx[k++]=k0/0.0025; // t
+                plmd->xr[k]=xr_t[(plmd->block0[sj]+j)*plmd->nblocks+plmd->block0[si]+i]; // t
+                plmd->kx[k++]=k0/0.0025; // t
+                plmd->xr[k]=xr_u[(plmd->block0[si]+i)*plmd->nblocks+plmd->block0[sj]+j]; // u
+                plmd->kx[k++]=k0/0.0025; // u
+                plmd->xr[k]=xr_u[(plmd->block0[sj]+j)*plmd->nblocks+plmd->block0[si]+i]; // u
+                plmd->kx[k++]=k0/0.0025; // u
               }
             }
           }
@@ -339,8 +341,8 @@ struct_plmd* setup(int argc, char *argv[])
     free(xr_x);
     free(xr_s);
     if (plmd->bias==bcxstu2026) {
-    free(xr_t);
-    free(xr_u);
+      free(xr_t);
+      free(xr_u);
     }
   }
   cudaMalloc(&plmd->kx_d,plmd->nx*sizeof(real));
@@ -355,6 +357,7 @@ struct_plmd* setup(int argc, char *argv[])
   for (si=0; si<plmd->nsites; si++) {
     for (sj=si; sj<plmd->nsites; sj++) {
       if (si==sj) { // Same site
+        // marginal
         for (i=plmd->block0[si]; i<plmd->block0[si+1]; i++) {
           for (l=0; l<NBINS; l++) {
             plmd->kprofile[NBINS*k+l]=kp0;
@@ -362,14 +365,16 @@ struct_plmd* setup(int argc, char *argv[])
           }
           k++;
         }
+        // direct path
         for (i=plmd->block0[si]; i<plmd->block0[si+1]; i++) {
-          for (j=i+1; j<plmd->block0[sj+1]; j++) {
+          for (j=i+1; j<plmd->block0[sj+1]; j++) { // upper triangle
             for (l=0; l<NBINS; l++) {
               plmd->kprofile[NBINS*k+l]=kp0/((plmd->nsubs[si]-1)/2.0);
             }
             k++;
           }
         }
+        // 2D intermediates
         if (plmd->nsubs[si]>2) {
           for (i=plmd->block0[si]; i<plmd->block0[si+1]; i++) {
             for (j=i+1; j<plmd->block0[sj+1]; j++) {
@@ -381,6 +386,7 @@ struct_plmd* setup(int argc, char *argv[])
           }
         }
       } else if (plmd->msprof) {
+        // 2D intermediates coupling
         for (i=plmd->block0[si]; i<plmd->block0[si+1]; i++) {
           for (j=plmd->block0[sj]; j<plmd->block0[sj+1]; j++) {
             for (l=0; l<NBINS; l++) {
@@ -620,14 +626,14 @@ void energykernel(struct_plmd plmd,real* x,real* lambda,real* energy)
               E+=x[k]*q1*(1-1/(q2/a+1));
               k++;
               if (bias==bcxstu2026) {
-              E+=x[k]*q2*(1-1/(q1/(-1-a)+1));
-              k++;
-              E+=x[k]*q1*(1-1/(q2/(-1-a)+1));
-              k++;
-              E+=x[k]*q2*q2*(1-1/(q1/a+1));
-              k++;
-              E+=x[k]*q1*q1*(1-1/(q2/a+1));
-              k++;
+                E+=x[k]*q2*(1-1/(q1/(-1-a)+1));
+                k++;
+                E+=x[k]*q1*(1-1/(q2/(-1-a)+1));
+                k++;
+                E+=x[k]*q2*q2*(1-1/(q1/a+1));
+                k++;
+                E+=x[k]*q1*q1*(1-1/(q2/a+1));
+                k++;
               }
             }
           }
@@ -648,14 +654,14 @@ void energykernel(struct_plmd plmd,real* x,real* lambda,real* energy)
                 E+=x[k]*q1*(1-1/(q2/a+1));
                 k++;
                 if (bias==bcxstu2026) {
-                E+=x[k]*q2*(1-1/(q1/(-1-a)+1));
-                k++;
-                E+=x[k]*q1*(1-1/(q2/(-1-a)+1));
-                k++;
-                E+=x[k]*q2*q2*(1-1/(q1/a+1));
-                k++;
-                E+=x[k]*q1*q1*(1-1/(q2/a+1));
-                k++;
+                  E+=x[k]*q2*(1-1/(q1/(-1-a)+1));
+                  k++;
+                  E+=x[k]*q1*(1-1/(q2/(-1-a)+1));
+                  k++;
+                  E+=x[k]*q2*q2*(1-1/(q1/a+1));
+                  k++;
+                  E+=x[k]*q1*q1*(1-1/(q2/a+1));
+                  k++;
                 }
               }
             }
