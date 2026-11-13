@@ -66,7 +66,7 @@ def initialize_alf_info(engine='charmm'):
     alf_info['q']=np.array(alf_info['q'])
 
   # Check loss function
-  losses=['linear2018','nonlinear2024']
+  losses=['linear2018','nonlinear2024','forcematch2026']
   if not 'loss' in alf_info:
     # print("Error: need loss key in prep/alf_info.py. Options are")
     # print(losses)

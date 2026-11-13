@@ -41,6 +41,7 @@ def GetLambdas(alf_info,istep,ndupl=None,begres=None,endres=None):
   import numpy as np
   # from subprocess import call
   from alf.GetLambda import GetLambda
+  from alf.GetLambda import GetLambdaForce
 
   if ndupl==None:
     production=False
@@ -69,6 +70,7 @@ def GetLambdas(alf_info,istep,ndupl=None,begres=None,endres=None):
 
     for i in range(0,nreps):
       fnmsin=[]
+      fnmsin_frc=[]
       if nreps>1:
         reptag="_"+str(i)
       else:
@@ -76,7 +78,12 @@ def GetLambdas(alf_info,istep,ndupl=None,begres=None,endres=None):
       if production:
         for j in range(begres,endres):
           fnmsin.append(DDIR+'/res/'+name+'_prod'+str(j+1)+'.lmd'+reptag)
+          fnmsin_frc.append(DDIR+'/res/'+name+'_prod'+str(j+1)+'.lmd_frc'+reptag)
       else:
         fnmsin.append(DDIR+'/res/'+name+'_flat.lmd'+reptag)
+        fnmsin_frc.append(DDIR+'/res/'+name+'_flat.lmd_frc'+reptag)
       fnmout=DIR+("/Lambda.%d.%d.dat" % (idupl,i))
       GetLambda(alf_info,fnmout,fnmsin)
+
+      fnmout_frc=DIR+("/LambdaForce.%d.%d.dat" % (idupl,i))
+      GetLambdaForce(alf_info,fnmout_frc,fnmsin_frc)

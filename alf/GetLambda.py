@@ -157,6 +157,55 @@ def GetLambdaBlade(alf_info,fnmout,fnmsin):
 
   np.savetxt(fnmout,Lambdas,fmt="%10.6f")
 
+def GetLambdaForceBlade(alf_info,fnmout,fnmsin):
+  """
+  Reads alchemical force trajectories from BLaDE binary format if files exist
+
+  This routine is called by the routine GetLambda to read standalone BLaDE
+  binary alchemical force trajectories and write them to human readable format.
+
+  Parameters
+  ----------
+  alf_info : dict
+      Dictionary of variables alf needs to run
+  fnmout : str
+      The filename for the human readable output
+  fnmsin : list of str
+      A list of the filenames of the binary input files
+  """
+
+  import sys, os
+  import numpy as np
+  from mda_xdrlib.xdrlib import Unpacker
+  from mda_xdrlib.xdrlib import Packer
+
+  nblocks=alf_info['nblocks']
+  LambdaForces=np.zeros((0,nblocks))
+
+  p=Packer()
+  p.pack_int(0)
+  for j in range(0,nblocks):
+    p.pack_float(0)
+  linewidth=len(p.get_buffer())
+
+  for fnmin in fnmsin:
+    if not os.path.exists(fnmin):
+      print("Cannot find file: " + fnmin)
+      continue # Don't log a warning
+    # Lambda=np.loadtxt(sys.argv[ifp])
+    fp=open(fnmin,"rb")
+    fpdata=fp.read()
+    lines=len(fpdata)//linewidth
+    fp.close()
+    LambdaForce=np.zeros((lines,nblocks))
+    p=Unpacker(fpdata)
+    for i in range(0,lines):
+      p.unpack_int()
+      for j in range(0,nblocks):
+        LambdaForce[i,j]=p.unpack_float()
+    LambdaForces=np.concatenate((LambdaForces,LambdaForce),axis=0)
+
+  np.savetxt(fnmout,LambdaForces,fmt="%10.6f")
 
 
 def GetLambda(alf_info,fnmout,fnmsin):
@@ -184,6 +233,23 @@ def GetLambda(alf_info,fnmout,fnmsin):
     GetLambdaCharmm(alf_info,fnmout,fnmsin)
   elif alf_info['engine'] in ['blade']:
     GetLambdaBlade(alf_info,fnmout,fnmsin)
+  else:
+    print("Error: unsupported engine type %s" % alf_info['engine'])
+    quit(1)
+
+def GetLambdaForce(alf_info,fnmout,fnmsin):
+  """
+  Reads alchemical force trajectories from binary format and writes to text files
+
+  This is called directly after GetLambda and only reads in files
+  if they exist because forces are not always printed by BLaDE/CHARMM
+  or used by ALF.
+  """
+
+  if alf_info['engine'] in ['charmm','bladelib','pycharmm']:
+    print("Reading forces from CHARMM is NYI")
+  elif alf_info['engine'] in ['blade']:
+    GetLambdaForceBlade(alf_info,fnmout,fnmsin)
   else:
     print("Error: unsupported engine type %s" % alf_info['engine'])
     quit(1)

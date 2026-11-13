@@ -1,5 +1,5 @@
 
-def runprod(step,a,itt0,itt,nsteps=500000,nsavc=50000,engine='charmm',maxtries=None):
+def runprod(step,a,itt0,itt,nsteps=500000,nsavc=50000,nsavl=10,engine='charmm',maxtries=None,extend_prod=False):
   """
   run a longer production run of lambda dynamics
 
@@ -78,6 +78,9 @@ def runprod(step,a,itt0,itt,nsteps=500000,nsavc=50000,engine='charmm',maxtries=N
   nsavc : int, optional
       The frequency of printing out structures in time steps. (default is
       50000)
+  nsavl : int, optional
+      The frequency of printing out lambdas in time steps. (default is
+      10)
   engine : str, optional
       The molecular dynamics engine string, see help(alf) for allowed
       values. (default is 'charmm')
@@ -85,6 +88,10 @@ def runprod(step,a,itt0,itt,nsteps=500000,nsavc=50000,engine='charmm',maxtries=N
       By default, maxtries=None, so ALF tries until it succeeds, which can
       waste resources if there is an error in the setup. If maxtries is
       given, ALF will give up after that many failures.
+  extend_prod : bool, optional
+      Boolean to determin if ALF should restart the first chunk of this 
+      cycle of ALF from the restart file of the last chunk of the previous
+      cycle of ALF. False by default.
   """
 
   import os, sys, shutil, traceback, time, subprocess, random
@@ -96,7 +103,7 @@ def runprod(step,a,itt0,itt,nsteps=500000,nsavc=50000,engine='charmm',maxtries=N
   home_dir=os.getcwd()
 
   run_dir=('run'+str(step)+a)
-  nlambdasteps=nsteps//10 # assume nsavl=10
+  nlambdasteps=nsteps//nsavl # assume nsavl=10
 
   if itt0<0:
     print("Warning itt0=%d not allowed. Reset itt0=0" % (itt0,))
@@ -128,6 +135,33 @@ def runprod(step,a,itt0,itt,nsteps=500000,nsavc=50000,engine='charmm',maxtries=N
     shutil.copy('variables%d.%s' % (step,fex),run_dir+'/variablesprod.'+fex)
     if not os.path.exists(run_dir+'/prep'):
       os.symlink('../prep',run_dir+'/prep') # ../prep is relative to final path, not current directory
+    # Remove restart file line added by runflat if it exists in this trial's variablesprod (prevents restarting from flattening output)
+    variables_name = run_dir+'/variablesprod.'+fex
+    lines = []
+    with open(variables_name, "r") as fp:
+      lines = fp.readlines()
+    lines_tmp = []
+    for line in lines:
+      if not line.__contains__("restartfile"):
+        lines_tmp.append(line)
+    lines = lines_tmp
+    with open(variables_name, "w") as fp:
+      if extend_prod:
+        try: 
+          # If corresponding directory run{step-1}{a} exists, append restart file to it's last restart file
+          files = os.listdir(f"run{step-1}{a}/res/")
+          files = [file for file in files if file.__contains__("res") and file.__contains__("prod")]
+          chunks = int(len(files) / alf_info['nreps'])
+          if engine in ['blade']:
+            lines.append(f"variables set restartfile ../run{step-1}{a}/res/{alf_info['name']}_prod{chunks}.res")
+        except FileNotFoundError:
+          # Allows for different numbers of trials prod to prod. 
+          print(f"Couldn't find corresponding trial directory run{step-1}{a} to restart from.")
+          print("Restarting from crystal structure.")
+      for line in lines:
+        fp.write(line)
+      
+
   os.chdir(run_dir)
 
   for i in range(ibeg,itt+1):

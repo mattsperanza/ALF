@@ -170,6 +170,7 @@ from alf.GetEnergy import *
 from alf.GetFreeEnergy5 import *
 from alf.GetFreeEnergyLM import *
 from alf.loss import *
+from alf.forceMatch import *
 from alf.GetSteps import *
 from alf.GetVariance import *
 from alf.dca.GetVariance import *

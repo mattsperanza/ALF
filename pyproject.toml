@@ -17,8 +17,8 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
-    "numpy",
-    "scipy",
+    "numpy >= 2.5.1",
+    "scipy >= 1.17.1",
     "MDAnalysis",
 ]
 

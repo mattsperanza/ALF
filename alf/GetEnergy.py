@@ -116,6 +116,44 @@ def GetEnergy(alf_info,Fi,Ff,N=None,skipE=1):
   if not os.path.isdir('Energy'):
     os.mkdir('Energy')
 
+  # Evaluate forces only for most recent bias & trajectory
+  dEdL=[] 
+  for i in range((NF-1)*ndupl*nreps, NF*ndupl*nreps):
+    bi=b[i]
+    ci=c[i]
+    xi=x[i]
+    si=s[i]
+    if alf_info['bias']=='bcxstu2026':
+      ti=t[i]
+      ui=u[i]
+    Li=Lambda[i]
+    derivative = np.zeros_like(Li)
+    g  = 1 - np.exp(-5.56*Li);  gp = 5.56*np.exp(-5.56*Li)
+    h  = Li/(Li+alpha);         hp = alpha/(Li+alpha)**2
+    dbdl = np.broadcast_to(-bi[None, :], Li.shape) # b
+    dcdl = -np.dot(Li, ci + ci.T) # c
+    dxdl = -(gp*np.dot(Li, xi.T) + np.dot(g, xi))  # x
+    dsdl = -(hp*np.dot(Li, si.T) + np.dot(h, si))  # s
+    derivative += dbdl + dcdl + dxdl + dsdl
+    if alf_info['bias']=='bcxstu2026':
+        p  = Li/(Li-(1+alpha))
+        pp = -(1+alpha)/(Li-(1+alpha))**2
+        dtdl = -(pp*np.dot(Li, ti.T) + np.dot(p, ti))  # t
+        dudl = -(hp*np.dot(Li**2, ui.T) + 2*Li*np.dot(h, ui))  # u
+        derivative += dtdl + dudl
+    dEdL.append(derivative)
+
+  # Load files, compute dU_msld/dL, & write
+  for i in range(ndupl):
+    for j in range(nreps):
+      idx=i*nreps+j
+      if os.path.isfile(f"data/LambdaForce.{i}.{j}.dat"):
+        dUdL = np.loadtxt(f"data/LambdaForce.{i}.{j}.dat")
+        if production:
+          dUdL=dUdL[(skipE-1)::skipE,:]
+        dUmsld_dL = dUdL - dEdL[idx] # Computed derivatives for sampled bias values, subtract to remove
+        np.savetxt(f"data/ForceFieldForce.{i}.{j}.dat", dUmsld_dL, fmt='%10.6f')
+
   E=[]
   for i in range(0,NF*ndupl*nreps):
     E.append([])

@@ -19,7 +19,7 @@ def SetGimp(alf_info):
   import subprocess
 
   # Don't generate G_imp if using custom implicit constraints, the user will supply it
-  if alf_info['impcons']=='custom':
+  if alf_info['impcons']=='custom' or alf_info['loss']=='forcematch2026':
     return
 
   if not os.path.exists('../G_imp'):
@@ -178,3 +178,7 @@ def nonlinear2024(alf_info,N,ntersite,fpout,fperr):
 
   # Run loss function
   subprocess.call(['time',os.path.dirname(__file__)+'/bin/nonlinear2024',alf_info['bias'],str(alf_info['temp']),str(ntersite[0]),str(ntersite[1])],stdout=fpout,stderr=fperr)
+
+def forceMatch2026(alf_info,i):
+  import alf
+  alf.forceMatch(alf_info, i)

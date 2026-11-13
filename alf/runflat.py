@@ -1,5 +1,5 @@
 
-def runflat(ni,nf,esteps,nsteps,engine='charmm',n1=1,maxtries=None,ntersite=[0,0]):
+def runflat(ni,nf,esteps,nsteps,engine='charmm',n1=1,maxtries=None,ntersite=[0,0],period=3):
   """
   Run several cycles of short simulations followed by bias optimization
 
@@ -148,11 +148,12 @@ def runflat(ni,nf,esteps,nsteps,engine='charmm',n1=1,maxtries=None,ntersite=[0,0
           shutil.copy('analysis%d/u_sum.dat' % (i-1),'analysis%d/u_prev.dat' % i)
         np.savetxt('analysis%d/nsubs' % i,np.array(alf_info['nsubs']).reshape((1,-1)),fmt=' %d')
 
-        if not os.path.exists('G_imp'):
-          print("Error, G_imp directory does not exist")
-          quit(1)
-        if not os.path.islink('analysis%d/G_imp' % i):
-          os.symlink('../G_imp','analysis%d/G_imp' % i)
+        if not alf_info['loss'] == 'forcematch2026':
+          if not os.path.exists('G_imp'):
+            print("Error, G_imp directory does not exist")
+            quit(1)
+          if not os.path.islink('analysis%d/G_imp' % i):
+            os.symlink('../G_imp','analysis%d/G_imp' % i)
         os.chdir('analysis%d' % i)
 
         # Run the analysis
@@ -165,6 +166,8 @@ def runflat(ni,nf,esteps,nsteps,engine='charmm',n1=1,maxtries=None,ntersite=[0,0
           elif alf_info['loss']=='nonlinear2024':
             alf.nonlinear2024(alf_info,N,ntersite,fpout,fperr)
             alf.GetFreeEnergyLM(alf_info,ntersite[0],ntersite[1])
+          elif alf_info['loss']=='forcematch2026':
+            alf.forceMatch2026(alf_info, i)
           else:
             print("Error, unrecognized loss function")
             quit(1)
