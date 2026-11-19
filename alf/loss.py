@@ -2,6 +2,7 @@
 
 def Gimp_direct(alf_info):
   import numpy as np
+  from forceMatch import NBINS_FM_HIST
   # Compute binning G_imp profile along exact direct paths (forcematch only works with fnpwise2026)
   nsubs = np.array(alf_info['nsubs'])
   blockBounds = np.hstack([[0], np.cumsum(nsubs)])
@@ -16,7 +17,7 @@ def Gimp_direct(alf_info):
     mc_Active = mc_Active[mask]
     cols = np.nonzero(mc_Active)[1].reshape(-1, 2)  # (i, j) with i < j for every frame
     lam = np.take_along_axis(mc_Site, cols, axis=1)[:, 1] # lj, li+lj=1, j>i, profile is symmetric, so this choice doesn't matter
-    nbins = 128 # want enough bins to make binning assumptions valid
+    nbins = NBINS_FM_HIST # want enough bins to make binning assumptions valid
     counts, _ = np.histogram(lam, bins=nbins, range=(0.0, 1.0))
     counts = counts.astype(np.float32)
     Gimp = np.full_like(counts, np.inf)

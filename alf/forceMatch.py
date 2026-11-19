@@ -2,10 +2,12 @@
 
 import numpy as np 
 import os
-import shutil
 from pathlib import Path
 from scipy.sparse.linalg import cg, LinearOperator
 import time
+
+# Constant defined globally so it can be accessed throughout ALF
+NBINS_FM_HIST = 128
 
 def check_options_settings(alf_info):
   if not alf_info['impcons'] == 'fnpwise2026':
@@ -106,7 +108,7 @@ def map_block_to_alpha(nblocks, per_path, n_basis, basis_bounds):
   return basis_substituents, connected_indices
 
 # File reading for force matching
-def read_fm_data(analysis_dir, ndupl, nreps, skipFM):
+def read_FM_data(analysis_dir, ndupl, nreps, skipFM):
   L_traj = []
   dUdL_traj = []
   for trial in range(ndupl): 
@@ -120,7 +122,7 @@ def read_fm_data(analysis_dir, ndupl, nreps, skipFM):
   return L_traj, dUdL_traj
 
 # Filter out data and fill array with active subs
-def filter_fm_data(L_traj, dUdL_traj, max_n_active):
+def filter_FM_data(L_traj, dUdL_traj, max_n_active):
   which_active = L_traj > 0
   n_actives = np.sum(which_active, axis=1)
   mask = n_actives != 1
@@ -178,7 +180,6 @@ def accumulate_FM_data(alf_info, A, bvec, L_traj, dUdL_traj, nblocks, n_basis, b
   for lo in range(0, L_traj.shape[0], chunk):
     sl = slice(lo, lo + chunk)
     accumulate(L_traj[sl], dUdL_traj[sl], A, bvec)
-  accumulated_count += L_traj.shape[0]
 
 
 def forceMatch(alf_info, Ff, fpout, fperr, verbose=True):
@@ -195,13 +196,14 @@ def forceMatch(alf_info, Ff, fpout, fperr, verbose=True):
   ###################
   ## Parameters  ####
   ###################
-  skipFM = 1                  # Frame skipping (skipping potentially saves lots of time)
+  skipFM = 1                  # Frame skipping (skipping potentially saves lots of time without sacrificing fit)
   max_n_active = nblocks      # Filter out samples with more than this many n_active
   n_min = 10                  # Threshold for "being sampled"
   d = .95                     # Exponential Decay Base
-  k_forceMatch = .9           # Force sample weight
-  k_hist = .1                 # Endstate updates
+  k_forceMatch = .8           # Force sample weight
+  k_hist = .2                 # Endstate updates
   k0 = 0.01                   # Fraction of nonlinear ALF's regularization
+  k0_by_type = {"b":  k0/4, "c":  k0/64, "xu": k0/4, "xl": k0/4,"su": k0, "sl": k0}
 
   # Build definitions of basis coefficent vector
   n_linear = int(nblocks); n_quad = int(nblocks*(nblocks-1)/2)
@@ -217,65 +219,61 @@ def forceMatch(alf_info, Ff, fpout, fperr, verbose=True):
   path_Amat = Path(f"../analysis{Ff-1}/Amat.dat")
   path_bvec = Path(f"../analysis{Ff-1}/bvec.dat")
   path_accum = Path(f"../analysis{Ff-1}/accumulated_count.dat")
-  if path_Amat.is_file():
-    A = np.loadtxt(path_Amat, ndmin=2)
-  else:
-    A = np.zeros((n_basis, n_basis))
-  if path_bvec.is_file():
-    bvec = np.loadtxt(path_bvec, ndmin=1)
-  else:
-    bvec = np.zeros(n_basis)
-  if path_accum.is_file():
-    accumulated_count = np.loadtxt(path_accum, ndmin=1, dtype=np.int64)
-  else:
-    accumulated_count = np.zeros(1, dtype=np.int64)
+  # All or none file check
+  present = [path_Amat.is_file(), path_bvec.is_file(), path_accum.is_file()]
+  assert all(present) or not any(present), (f"Inconsistent accumulated files in analysis{Ff-1}: "
+                          f"Amat={present[0]}, bvec={present[1]}, accumulated_count={present[2]}")
+  A = np.loadtxt(path_Amat, ndmin=2) if path_Amat.is_file() else np.zeros((n_basis, n_basis))
+  bvec = np.loadtxt(path_bvec, ndmin=1) if path_bvec.is_file() else np.zeros(n_basis)
+  accumulated_count = np.loadtxt(path_accum, ndmin=1, dtype=np.float64) if path_accum.is_file() else np.zeros(1)
   assert A.shape == (n_basis, n_basis), f"{path_Amat} has shape {A.shape}, expected {(n_basis, n_basis)}"
   assert bvec.shape == (n_basis,), f"{path_bvec} has shape {bvec.shape}, expected {(n_basis,)}"
   assert accumulated_count.shape == (1,), f"{path_accum} has shape {accumulated_count.shape}, expected {(1,)}"
   end_Ab_read = time.perf_counter()
   # Exponental sample weight decay (before accumulating)
-  A *= d
-  bvec *= d
+  A *= d; bvec *= d; accumulated_count *= d
 
   ###################
   ## Force Match  ###
   ###################
   # Read traj/force files from analysis_dir/data/*
   start_load = time.perf_counter()
-  L_traj, dUdL_traj = read_fm_data(analysis_dir, ndupl, nreps, skipFM)
+  L_traj, dUdL_traj = read_FM_data(analysis_dir, ndupl, nreps, skipFM)
   L_traj = np.vstack(L_traj); dUdL_traj = np.vstack(dUdL_traj)
   # Filter out unwanted data for force matching (end-states and n_active > max_n_active)
-  L_traj, dUdL_traj, endstate_counts, n_actives = filter_fm_data(L_traj, dUdL_traj, max_n_active)
+  L_traj, dUdL_traj, endstate_counts, n_actives = filter_FM_data(L_traj, dUdL_traj, max_n_active)
   hist = np.bincount(n_actives, minlength=nblocks).astype(np.int32)
   print(f"Endstate Counts: {endstate_counts}", file=fpout)
   print(f"Counts in each n_active state: {hist}", file=fpout)
   print(f"Filtered FM L_traj shape: {L_traj.shape}, max_n_active={max_n_active}", file=fpout)
   end_load = time.perf_counter()
    # Keep track of how many iterations since each state was sampled
-  path_since = Path("cycles_since_sampled.dat")
   prev_since = Path(f"../analysis{Ff-1}/cycles_since_sampled.dat")
   since = np.loadtxt(prev_since, ndmin=1) if prev_since.is_file() else np.zeros(nblocks)
   sampled = endstate_counts >= n_min
   since = np.where(sampled, 0, since + 1)
-  np.savetxt(path_since, since.reshape(1, -1), fmt="%d")
+  np.savetxt("cycles_since_sampled.dat", since.reshape(1, -1), fmt="%d")
+  # Keep track of accumulated endstate samples
+  prev_endstate = Path(f"../analysis{Ff-1}/accumulated_endstates.dat")
+  accum_endstate = np.loadtxt(prev_endstate, ndmin=1) if prev_endstate.is_file() else np.zeros(nblocks)
+  accum_endstate = d*accum_endstate + endstate_counts
+  np.savetxt("accumulated_endstates.dat", accum_endstate.reshape(1, -1), fmt="%.6f")
 
   # Accumulate samples into A and b by sample chunks
   start_accumulate = time.perf_counter()
   accumulate_FM_data(alf_info, A, bvec, L_traj, dUdL_traj, nblocks, n_basis, basis_substituents, basis_masks) 
+  accumulated_count += L_traj.shape[0]
   end_accumulate = time.perf_counter()
   # Clean up after force matching to avoid confusion w/ densities
-  del L_traj; del dUdL_traj
+  del L_traj; del dUdL_traj; del endstate_counts; del n_actives
   # Save force matching system to current analysis directory
   start_Ab_write = time.perf_counter()
-  path_Amat = Path(f"Amat.dat")
-  path_bvec = Path(f"bvec.dat")
-  path_accum = Path(f"accumulated_count.dat")
-  np.savetxt(path_Amat, A, fmt="%.17e")
-  np.savetxt(path_bvec, bvec, fmt="%.17e")
-  np.savetxt(path_accum, accumulated_count, fmt="%d")
+  np.savetxt("Amat.dat", A, fmt="%.17e")
+  np.savetxt("bvec.dat", bvec, fmt="%.17e")
+  np.savetxt("accumulated_count.dat", accumulated_count, fmt="%.17e")
   # Scale history (after saving) so all force samples have a fixed weight reguardless of the number of samples
-  A *= k_forceMatch/accumulated_count
-  bvec *= k_forceMatch/accumulated_count
+  scale = k_forceMatch / max(accumulated_count[0], 1.0)
+  A *= scale; bvec *= scale;
   # Remove A and b from analysis{Ff-2} to save space for larger A files
   if os.path.exists(f"../analysis{Ff-2}/Amat.dat"):
     os.remove(f"../analysis{Ff-2}/Amat.dat")
@@ -286,16 +284,32 @@ def forceMatch(alf_info, Ff, fpout, fperr, verbose=True):
   ###################
   ## Histogram  #####
   ###################
-  # TODO: Read density traj from Lambda/Lambda.dat and un-normalized target weights from Lambda/weights.dat
-
-  # TODO: Endstate histogram FE loss with MBAR weights
-  actives_mask = endstate_counts >= n_min
+  start_histogram_loss = time.perf_counter()
+  # Read density traj from Lambda/Lambda.dat and un-normalized target weights from Lambda/weights.dat
+  L_traj = np.loadtxt("Lambda/Lambda.dat", ndmin=2)
+  weights = np.loadtxt("Lambda/weight.dat", ndmin=1)
+  if L_traj.shape[0] != weights.shape[0]:
+    print(f"Error: Lambda/Lambda.dat and Lambda/weight.dat do not have the same number of rows! L_traj: {L_traj.shape}, weights: {weights.shape}")
+    quit(1)
+  weights /= np.sum(weights) # Weights need to be normalized
+  actives = L_traj > 0
+  n_actives = np.sum(actives, axis=1)
+  endstate_mask = n_actives == 1
+  endstate_counts = np.sum(L_traj[endstate_mask], axis=0)
+  # sum_t w_{Kt} I_{i}
+  endstate_weights = np.sum(actives[endstate_mask]*weights[endstate_mask, None], axis=0)
+  print(f"Histogram FE Endstate Counts: {endstate_counts}", file=fpout)
+  print(f"Histogram FE Endstate weights: {endstate_weights}", file=fpout)
+  # Histogram FE vs. linear b cefficient loss
+  actives_mask = (endstate_counts >= n_min) & (endstate_weights > 0)
   idx = np.flatnonzero(actives_mask)
   num_actives = len(idx)
   if num_actives > 1:
-    F = np.where(actives_mask, alpha0[0:nblocks]-kT*np.log(np.where(actives_mask, endstate_counts, 1)), 0)
-    print(f"F: {F}")
-    F = np.where(actives_mask, F - F.sum()/num_actives, 0)   # center over actives only, keep inactive at 0
+    # Histogram k_hist*(a0 + F - a + G)^2
+    F = np.where(actives_mask, -kT*np.log(np.where(actives_mask, endstate_weights, 1)), 0)
+    print(f"Histogram excess Fi: {np.where(actives_mask, F, np.nan)}", file=fpout)
+    F += np.where(actives_mask, alpha0[:nblocks], 0)
+    F = np.where(actives_mask, F - F[idx].mean(), 0)
     A_hist = np.zeros((nblocks, nblocks))
     A_hist[np.ix_(idx, idx)] = -k_hist/num_actives
     A_hist[idx, idx] += k_hist
@@ -303,15 +317,14 @@ def forceMatch(alf_info, Ff, fpout, fperr, verbose=True):
 
     A[0:nblocks, 0:nblocks] += A_hist
     bvec[0:nblocks] += b_hist
-
-  # TODO: Direct path histogram FE loss with MBAR weights
+  # TODO: Direct path histogram FE loss with MBAR weights? Is this required?
+  end_histogram_loss = time.perf_counter()
 
   ###################
   ## Solver  ########
   ###################
   # Per-basis-type regularization
   # (A + diag(k0)) alpha = bvec + k0 * alpha0 
-  k0_by_type = {"b":  k0/4, "c":  k0/64, "xu": k0/4, "xl": k0/4,"su": k0, "sl": k0}
   k0_vec = np.array([k0_by_type[t] for t in basis_identity])   # shape (n_basis,)
   A = A + np.diag(k0_vec)
   bvec = bvec + k0_vec*alpha0
@@ -352,11 +365,12 @@ def forceMatch(alf_info, Ff, fpout, fperr, verbose=True):
   end_program = time.perf_counter()
 
   # Print timings
-  print("Force Matching Timings:")
+  print("Force Matching Timings:", file=fpout)
   print(f"{end_load - start_load:7.1f}s    loading lambda and lambda force trajectories", file=fpout) # 4 spaces after 's'
   print(f"{end_Ab_read - start_Ab_read:7.1f}s    reading A and b", file=fpout)
   print(f"{end_accumulate -  start_accumulate:7.1f}s    accumulating into A and b", file=fpout)
   print(f"{end_Ab_write - start_Ab_write:7.1f}s    writing A and b", file=fpout)
+  print(f"{end_histogram_loss - start_histogram_loss:7.1f}s    performing weighted histogram loss", file=fpout)
   print(f"{end_solver - start_solver:7.1f}s    solving linear system", file=fpout)
   print(f"{end_program - start_program:7.1f}s    total program time", file=fpout)
 
