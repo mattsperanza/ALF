@@ -7,28 +7,31 @@ from pathlib import Path
 from scipy.sparse.linalg import cg, LinearOperator
 import time
 
-def read_analysis_dir(analysis_dir, ndupl, nreps, skip):
-  L_traj = []
-  dUdL_traj = []
-  for trial in range(ndupl): 
-    for rep in range(nreps): 
-      lFile = analysis_dir.absolute() / f"data/Lambda.{trial}.{rep}.dat"
-      lfFile = analysis_dir.absolute() / f"data/ForceFieldForce.{trial}.{rep}.dat"
-      lData = np.loadtxt(lFile)[::skip]
-      lfData = np.loadtxt(lfFile)[::skip]
-      L_traj.append(lData)
-      dUdL_traj.append(lfData)
-  return L_traj, dUdL_traj
+def check_options_settings(alf_info):
+  if not alf_info['impcons'] == 'fnpwise2026':
+    print("Error: force matching script only works with fnpwise2026 constraint")
+    quit(1)
+  if not alf_info['bias'] == 'bcxs2018':
+    print("Error: this script only works with bcxs2018 bias for now.")
+    quit(1)
+  if alf_info['nsubs'].shape[0] != 1:
+    print("Error: this script is not set up for multi-site calculations")
+    quit(1)
 
-# Filter out data and fill array with active subs
-def filter_data(L_traj, dUdL_traj, max_n_active):
-  which_active = L_traj > 0
-  n_actives = np.sum(which_active, axis=1)
-  mask = n_actives != 1
-  endstate_counts = np.sum(L_traj[~mask], axis=0)
-  if max_n_active != -1:
-    mask &= n_actives <= max_n_active
-  return L_traj[mask], dUdL_traj[mask], endstate_counts
+def determine_ndupl(Ff):
+  # Determine ndupl
+  if os.path.isdir('../run'+str(Ff)):
+    ndupl=1
+  else:
+    alphabet='abcdefghijklmnopqrstuvwxyz'
+    ndupl=0
+    for i in range(0,len(alphabet)):
+      if os.path.isdir('../run'+str(Ff)+alphabet[i]):
+        ndupl+=1
+    if ndupl==0:
+      print("Error, not flattening or production")
+      quit(1)
+  return ndupl
 
 def build_alpha(alf_info, analysis_dir, nblocks, n_basis, n_quad):
   b = np.loadtxt(analysis_dir.absolute() / "b_prev.dat")
@@ -53,7 +56,7 @@ def build_alpha(alf_info, analysis_dir, nblocks, n_basis, n_quad):
   basis_identity[bound:bound+n_quad]="c"
   bound = bound+n_quad
   basis_bounds.append(bound)
-  # x -> xij*li*(1 - exp(-5.56*lj)) 
+  # x -> xij*(1 - exp(-5.56*li))*lj
   alpha0[bound:bound+n_quad]=x[np.triu_indices(nblocks, k=1)]
   basis_identity[bound:bound+n_quad]="xu"
   bound = bound+n_quad
@@ -72,59 +75,12 @@ def build_alpha(alf_info, analysis_dir, nblocks, n_basis, n_quad):
   # t -> tij*li*lj/(li - (1+alpha))
   # u -> tij*li*lj^2/(li + alpha)
 
-  return alpha0, basis_identity, basis_bounds
+  basis_masks = {k: basis_identity == k for k in ("b", "c", "xu", "xl", "su", "sl")}
 
+  return alpha0, basis_identity, basis_bounds, basis_masks
 
-def forceMatch(alf_info, Ff, verbose=True):
-  start_program = time.perf_counter()
-  if not alf_info['impcons'] == 'fnpwise2026':
-    print("Error: this script only works with fnpwise2026 constraint")
-    quit(1)
-  if not alf_info['bias'] == 'bcxs2018':
-    print("Error: this script only works with bcxs2018 bias for now.")
-    quit(1)
-  nsubs = alf_info['nsubs'] # array of nsubs at each site 
-  nblocks = alf_info['nblocks']
-  nsite = nsubs.shape[0]
-  if nsite != 1:
-    print("Error: this script is not set up for multi-site calculations")
-    quit(1)
-
-  analysis_dir = Path('./') # runflat leaves you in current analysis directory
-  nreps = alf_info['nreps']
-  k0 = .01 # Fraction of nonlinear ALF's regularization
-  skip = 1
-  max_n_active = nblocks
-
-  # Determine ndupl
-  if os.path.isdir('../run'+str(Ff)):
-    ndupl=1
-  else:
-    alphabet='abcdefghijklmnopqrstuvwxyz'
-    ndupl=0
-    for i in range(0,len(alphabet)):
-      if os.path.isdir('../run'+str(Ff)+alphabet[i]):
-        ndupl+=1
-    if ndupl==0:
-      print("Error, not flattening or production")
-      quit(1)
-
-  # Read files from analysis_dir/data/*
-  start_load = time.perf_counter()
-  L_traj, dUdL_traj = read_analysis_dir(analysis_dir, ndupl, nreps, skip)
-  L_traj = np.vstack(L_traj)
-  dUdL_traj = np.vstack(dUdL_traj)
-  # Filter out unwanted data (end-states and n_active > max_n_active)
-  L_traj, dUdL_traj, endstate_counts = filter_data(L_traj, dUdL_traj, max_n_active)
-  end_load = time.perf_counter()
-  
-  # Build definitions of basis coefficent vector
-  n_linear = int(nblocks)
-  n_quad = int(nblocks*(nblocks-1)/2)
-  per_path = 5 if alf_info['bias'] == 'bcxs2018' else 7
-  n_basis = n_linear+per_path*n_quad
-  alpha0, basis_identity, basis_bounds = build_alpha(alf_info, analysis_dir, nblocks, n_basis, n_quad)
-
+# Create maps from block->basis and basis->block
+def map_block_to_alpha(nblocks, per_path, n_basis, basis_bounds):
   # List of basis functions each substituent is a part of, and vice versa
   quad_indices = np.zeros((nblocks,nblocks), dtype=np.int32)
   quad_indices[np.triu_indices(nblocks, k=1)]=np.arange(0, int(nblocks*(nblocks-1)/2), dtype=np.int32)
@@ -147,7 +103,33 @@ def forceMatch(alf_info, Ff, verbose=True):
   assert (counts[:nblocks] == 1).all() and (counts[nblocks:] == 2).all()
   lin_terms = counts == 1
   basis_substituents[lin_terms, 1] = basis_substituents[lin_terms, 0]
+  return basis_substituents, connected_indices
 
+# File reading for force matching
+def read_fm_data(analysis_dir, ndupl, nreps, skipFM):
+  L_traj = []
+  dUdL_traj = []
+  for trial in range(ndupl): 
+    for rep in range(nreps): 
+      lFile = analysis_dir.absolute() / f"data/Lambda.{trial}.{rep}.dat"
+      lfFile = analysis_dir.absolute() / f"data/ForceFieldForce.{trial}.{rep}.dat"
+      lData = np.loadtxt(lFile)[::skipFM] 
+      lfData = np.loadtxt(lfFile)[::skipFM]
+      L_traj.append(lData)
+      dUdL_traj.append(lfData)
+  return L_traj, dUdL_traj
+
+# Filter out data and fill array with active subs
+def filter_fm_data(L_traj, dUdL_traj, max_n_active):
+  which_active = L_traj > 0
+  n_actives = np.sum(which_active, axis=1)
+  mask = n_actives != 1
+  endstate_counts = np.sum(L_traj[~mask], axis=0)
+  if max_n_active != -1:
+    mask &= n_actives <= max_n_active
+  return L_traj[mask], dUdL_traj[mask], endstate_counts, n_actives
+
+def accumulate_FM_data(alf_info, A, bvec, L_traj, dUdL_traj, nblocks, n_basis, basis_substituents, basis_masks):
   # Helper functions for processing samples
   K = 5.56
   if alf_info['bias']=='bcxs2018':
@@ -157,19 +139,17 @@ def forceMatch(alf_info, Ff, verbose=True):
   I = basis_substituents[:, 0]
   J = basis_substituents[:, 1]
   P = n_basis
-  masks = {k: basis_identity == k for k in ("b", "c", "xu", "xl", "su", "sl")}
   def basis_grads(L):   # L: (S, nblocks) -> gi, gj: (S, P)
       li, lj = L[:, I], L[:, J] # (S, P) filled with lambda pairs for each basis function
       gi, gj = np.zeros_like(li), np.zeros_like(li)
-      m = masks["b"];  gi[:, m] = 1
-      m = masks["c"];  gi[:, m] = lj[:, m];  gj[:, m] = li[:, m]
-      m = masks["xu"]; e = np.exp(-K*li[:, m]); gi[:, m] = K*lj[:, m]*e; gj[:, m] = 1 - e
-      m = masks["xl"]; e = np.exp(-K*lj[:, m]); gi[:, m] = 1 - e;        gj[:, m] = K*li[:, m]*e
-      m = masks["su"]; q = li[:, m] + ALPHA; gi[:, m] = ALPHA*lj[:, m]/q**2; gj[:, m] = li[:, m]/q
-      m = masks["sl"]; q = lj[:, m] + ALPHA; gi[:, m] = lj[:, m]/q;        gj[:, m] = ALPHA*li[:, m]/q**2
+      m = basis_masks["b"];  gi[:, m] = 1
+      m = basis_masks["c"];  gi[:, m] = lj[:, m];  gj[:, m] = li[:, m]
+      m = basis_masks["xu"]; e = np.exp(-K*li[:, m]); gi[:, m] = K*lj[:, m]*e; gj[:, m] = 1 - e
+      m = basis_masks["xl"]; e = np.exp(-K*lj[:, m]); gi[:, m] = 1 - e;        gj[:, m] = K*li[:, m]*e
+      m = basis_masks["su"]; q = li[:, m] + ALPHA; gi[:, m] = ALPHA*lj[:, m]/q**2; gj[:, m] = li[:, m]/q
+      m = basis_masks["sl"]; q = lj[:, m] + ALPHA; gi[:, m] = lj[:, m]/q;        gj[:, m] = ALPHA*li[:, m]/q**2
       # Partial derivatives of every sample and every basis function w.r.t. its component lambdas
       return gi, gj
-
   def accumulate(L, dUdL, A, bvec):
       d = 3 * L**(2/3)
       D = d.sum(1, keepdims=True)
@@ -194,38 +174,98 @@ def forceMatch(alf_info, Ff, verbose=True):
       bvec += np.einsum("spi,si->p", H, dUdT)
       Hm = H.transpose(1, 0, 2).reshape(P, -1)      # (S, P, nblocks) -> (P, S, nblocks) -> (P, S*nblocks)
       A += Hm @ Hm.T # (P, P) A[p,l] += sum_s sum_i df_p/dTi|s * df_l/dTi|s
+  chunk = 1024 # Chunk size
+  for lo in range(0, L_traj.shape[0], chunk):
+    sl = slice(lo, lo + chunk)
+    accumulate(L_traj[sl], dUdL_traj[sl], A, bvec)
+  accumulated_count += L_traj.shape[0]
 
-  # Accumulate samples from this run into Amat.dat and bvec.dat
+
+def forceMatch(alf_info, Ff, fpout, fperr, verbose=True):
+  start_program = time.perf_counter()
+  check_options_settings(alf_info)
+  ndupl = determine_ndupl(Ff)
+  analysis_dir = Path('./') # runflat leaves you in current analysis directory
+  # Load MSLD parameters
+  nsubs = alf_info['nsubs'] 
+  nblocks = alf_info['nblocks']
+  nreps = alf_info['nreps']
+  kT=0.001987*alf_info['temp']
+
+  ###################
+  ## Parameters  ####
+  ###################
+  skipFM = 1                  # Frame skipping (skipping potentially saves lots of time)
+  max_n_active = nblocks      # Filter out samples with more than this many n_active
+  n_min = 10                  # Threshold for "being sampled"
+  d = .95                     # Exponential Decay Base
+  k_forceMatch = .9           # Force sample weight
+  k_hist = .1                 # Endstate updates
+  k0 = 0.01                   # Fraction of nonlinear ALF's regularization
+
+  # Build definitions of basis coefficent vector
+  n_linear = int(nblocks); n_quad = int(nblocks*(nblocks-1)/2)
+  per_path = 5 if alf_info['bias'] == 'bcxs2018' else 7
+  n_basis = n_linear+per_path*n_quad
+  alpha0, basis_identity, basis_bounds, basis_masks = build_alpha(alf_info, analysis_dir, nblocks, n_basis, n_quad)
+  basis_substituents, connected_indices = map_block_to_alpha(nblocks, per_path, n_basis, basis_bounds)
+
+  ###################
+  ## Data Matrix  ###
+  ###################
   start_Ab_read = time.perf_counter()
   path_Amat = Path(f"../analysis{Ff-1}/Amat.dat")
   path_bvec = Path(f"../analysis{Ff-1}/bvec.dat")
   path_accum = Path(f"../analysis{Ff-1}/accumulated_count.dat")
   if path_Amat.is_file():
     A = np.loadtxt(path_Amat, ndmin=2)
-    assert A.shape == (P, P), f"{path_Amat} has shape {A.shape}, expected {(P, P)}"
   else:
-    A = np.zeros((P, P))
+    A = np.zeros((n_basis, n_basis))
   if path_bvec.is_file():
     bvec = np.loadtxt(path_bvec, ndmin=1)
-    assert bvec.shape == (P,), f"{path_bvec} has shape {bvec.shape}, expected {(P,)}"
   else:
-    bvec = np.zeros(P)
+    bvec = np.zeros(n_basis)
   if path_accum.is_file():
     accumulated_count = np.loadtxt(path_accum, ndmin=1, dtype=np.int64)
-    assert accumulated_count.shape == (1,), f"{path_accum} has shape {accumulated_count.shape}, expected {(1,)}"
   else:
     accumulated_count = np.zeros(1, dtype=np.int64)
+  assert A.shape == (n_basis, n_basis), f"{path_Amat} has shape {A.shape}, expected {(n_basis, n_basis)}"
+  assert bvec.shape == (n_basis,), f"{path_bvec} has shape {bvec.shape}, expected {(n_basis,)}"
+  assert accumulated_count.shape == (1,), f"{path_accum} has shape {accumulated_count.shape}, expected {(1,)}"
   end_Ab_read = time.perf_counter()
- 
-  # Accumulation into A and b by sample chunks
-  chunk = 1024
+  # Exponental sample weight decay (before accumulating)
+  A *= d
+  bvec *= d
+
+  ###################
+  ## Force Match  ###
+  ###################
+  # Read traj/force files from analysis_dir/data/*
+  start_load = time.perf_counter()
+  L_traj, dUdL_traj = read_fm_data(analysis_dir, ndupl, nreps, skipFM)
+  L_traj = np.vstack(L_traj); dUdL_traj = np.vstack(dUdL_traj)
+  # Filter out unwanted data for force matching (end-states and n_active > max_n_active)
+  L_traj, dUdL_traj, endstate_counts, n_actives = filter_fm_data(L_traj, dUdL_traj, max_n_active)
+  hist = np.bincount(n_actives, minlength=nblocks).astype(np.int32)
+  print(f"Endstate Counts: {endstate_counts}", file=fpout)
+  print(f"Counts in each n_active state: {hist}", file=fpout)
+  print(f"Filtered FM L_traj shape: {L_traj.shape}, max_n_active={max_n_active}", file=fpout)
+  end_load = time.perf_counter()
+   # Keep track of how many iterations since each state was sampled
+  path_since = Path("cycles_since_sampled.dat")
+  prev_since = Path(f"../analysis{Ff-1}/cycles_since_sampled.dat")
+  since = np.loadtxt(prev_since, ndmin=1) if prev_since.is_file() else np.zeros(nblocks)
+  sampled = endstate_counts >= n_min
+  since = np.where(sampled, 0, since + 1)
+  np.savetxt(path_since, since.reshape(1, -1), fmt="%d")
+
+  # Accumulate samples into A and b by sample chunks
   start_accumulate = time.perf_counter()
-  for lo in range(0, L_traj.shape[0], chunk):
-    sl = slice(lo, lo + chunk)
-    accumulate(L_traj[sl], dUdL_traj[sl], A, bvec)
-  accumulated_count += L_traj.shape[0]
+  accumulate_FM_data(alf_info, A, bvec, L_traj, dUdL_traj, nblocks, n_basis, basis_substituents, basis_masks) 
   end_accumulate = time.perf_counter()
-  # Save to current analysis directory
+  # Clean up after force matching to avoid confusion w/ densities
+  del L_traj; del dUdL_traj
+  # Save force matching system to current analysis directory
   start_Ab_write = time.perf_counter()
   path_Amat = Path(f"Amat.dat")
   path_bvec = Path(f"bvec.dat")
@@ -233,77 +273,91 @@ def forceMatch(alf_info, Ff, verbose=True):
   np.savetxt(path_Amat, A, fmt="%.17e")
   np.savetxt(path_bvec, bvec, fmt="%.17e")
   np.savetxt(path_accum, accumulated_count, fmt="%d")
+  # Scale history (after saving) so all force samples have a fixed weight reguardless of the number of samples
+  A *= k_forceMatch/accumulated_count
+  bvec *= k_forceMatch/accumulated_count
+  # Remove A and b from analysis{Ff-2} to save space for larger A files
+  if os.path.exists(f"../analysis{Ff-2}/Amat.dat"):
+    os.remove(f"../analysis{Ff-2}/Amat.dat")
+  if os.path.exists(f"../analysis{Ff-2}/bvec.dat"):
+    os.remove(f"../analysis{Ff-2}/bvec.dat")
   end_Ab_write = time.perf_counter()
-  # TODO: Remove A.dat and b.dat from ../analysis{Ff-1}/ to save space for larger A files
 
-  # Per-basis-type regularization strengths 
-  k0_by_type = {
-    "b":  k0/4, "c":  k0/64, "xu": k0/4, 
-    "xl": k0/4,"su": k0, "sl": k0}
-  k0_vec = np.array([k0_by_type[t] for t in basis_identity])   # shape (n_basis,)
-  # Scale k0_vec to have same weight as all samples (i.e. place regularization inside sample sum)
-  k0_vec *= accumulated_count
- 
+  ###################
+  ## Histogram  #####
+  ###################
+  # TODO: Read density traj from Lambda/Lambda.dat and un-normalized target weights from Lambda/weights.dat
+
+  # TODO: Endstate histogram FE loss with MBAR weights
+  actives_mask = endstate_counts >= n_min
+  idx = np.flatnonzero(actives_mask)
+  num_actives = len(idx)
+  if num_actives > 1:
+    F = np.where(actives_mask, alpha0[0:nblocks]-kT*np.log(np.where(actives_mask, endstate_counts, 1)), 0)
+    print(f"F: {F}")
+    F = np.where(actives_mask, F - F.sum()/num_actives, 0)   # center over actives only, keep inactive at 0
+    A_hist = np.zeros((nblocks, nblocks))
+    A_hist[np.ix_(idx, idx)] = -k_hist/num_actives
+    A_hist[idx, idx] += k_hist
+    b_hist = k_hist*F 
+
+    A[0:nblocks, 0:nblocks] += A_hist
+    bvec[0:nblocks] += b_hist
+
+  # TODO: Direct path histogram FE loss with MBAR weights
+
+  ###################
+  ## Solver  ########
+  ###################
+  # Per-basis-type regularization
   # (A + diag(k0)) alpha = bvec + k0 * alpha0 
+  k0_by_type = {"b":  k0/4, "c":  k0/64, "xu": k0/4, "xl": k0/4,"su": k0, "sl": k0}
+  k0_vec = np.array([k0_by_type[t] for t in basis_identity])   # shape (n_basis,)
+  A = A + np.diag(k0_vec)
+  bvec = bvec + k0_vec*alpha0
+  # Solve (Amat@alpha = bvec) with CG
   start_solver = time.perf_counter()
-  Areg = A + np.diag(k0_vec)
-  rhs = bvec + k0_vec * alpha0
-  dinv = 1.0 / np.diag(Areg) # Preconditioner
-  M = LinearOperator(Areg.shape, matvec=lambda v: dinv * v)
-  # Track iterations
+  dinv = 1.0 / np.diag(A) # Diagonal preconditioner
+  M = LinearOperator(A.shape, matvec=lambda v: dinv * v)
   iters = {"n": 0}
   def count(_xk):
-      iters["n"] += 1
-  # Solve (Amat@alpha = bvec) with CG
-  soln_vector, info = cg(Areg, rhs, x0=alpha0, rtol=1e-10, maxiter=10 * n_basis,
+    iters["n"] += 1
+  soln_vector, info = cg(A, bvec, x0=alpha0, rtol=1e-10, maxiter=10 * n_basis,
                          M=M, callback=count)
   if info != 0:
-      print(f"WARNING: CG did not converge (info={info})")
-  rel_res = np.linalg.norm(Areg @ soln_vector - rhs) / np.linalg.norm(rhs)
-  print(f"CG iterations: {iters['n']}, relative residual: {rel_res:.3e}")
-  end_solver = time.perf_counter()
-
+    print(f"WARNING: CG did not converge (info={info})", file=fpout)
+  rel_res = np.linalg.norm(A @ soln_vector - bvec) / np.linalg.norm(bvec)
+  print(f"CG iterations: {iters['n']}, relative residual: {rel_res:.3e}", file=fpout)
   # Subtract reference linear parameter
   soln_vector[:nblocks] -= soln_vector[0]
-  
-  # shift linear coefficent if a substituent hasn't been sampled in the last 10 cycles
-  path_since = Path("cycles_since_sampled.dat")
-  prev_since = Path(f"../analysis{Ff-1}/cycles_since_sampled.dat")
-  since = np.loadtxt(prev_since, ndmin=1) if prev_since.is_file() else np.zeros(nblocks)
-  n_min = 10 # Threshold for "being sampled"
-  sampled = endstate_counts >= n_min
-  since = np.where(sampled, 0, since + 1)
-  np.savetxt(path_since, since.reshape(1, -1), fmt="%d")
-  dG = np.where(since >= 5 , .1, 0.0)
-  dG = np.where(since >= 10, .5, dG)
-  dG -= dG[0]
+  end_solver = time.perf_counter()
 
   # Write differences between old and new alphas: b.dat, c.dat, ...
   alpha_new = soln_vector.copy()
   alpha_new -= alpha0
-  alpha_new[:nblocks] += dG # Soln_vector is a model of the FES, so add
-
-  update_b = alpha_new[masks['b']]
+  update_b = alpha_new[basis_masks['b']]
   update_b = update_b.reshape(1, -1)
   np.savetxt(analysis_dir.absolute() / 'b.dat', update_b, fmt="%7.2f")
-  np.savetxt(analysis_dir.absolute() / 'b_hist.dat', dG.reshape(1, -1), fmt="%7.2f")
   update_c = np.zeros((nblocks,nblocks))
-  update_c[np.triu_indices_from(update_c, k=1)] = alpha_new[masks['c']]
+  update_c[np.triu_indices_from(update_c, k=1)] = alpha_new[basis_masks['c']]
   np.savetxt(analysis_dir.absolute() / 'c.dat', update_c, fmt="%7.2f")
   update_x = np.zeros((nblocks, nblocks))
-  update_x[np.triu_indices_from(update_x, k=1)] = alpha_new[masks['xu']]
-  update_x[np.tril_indices_from(update_x, k=-1)] = alpha_new[masks['xl']]
+  update_x[np.triu_indices_from(update_x, k=1)] = alpha_new[basis_masks['xu']]
+  update_x[np.tril_indices_from(update_x, k=-1)] = alpha_new[basis_masks['xl']]
   np.savetxt(analysis_dir.absolute() / 'x.dat', update_x, fmt="%7.2f")
   update_s = np.zeros((nblocks, nblocks))
-  update_s[np.triu_indices_from(update_s, k=1)] = alpha_new[masks['su']]
-  update_s[np.tril_indices_from(update_s, k=-1)] = alpha_new[masks['sl']]
+  update_s[np.triu_indices_from(update_s, k=1)] = alpha_new[basis_masks['su']]
+  update_s[np.tril_indices_from(update_s, k=-1)] = alpha_new[basis_masks['sl']]
   np.savetxt(analysis_dir.absolute() / 's.dat', update_s, fmt="%7.2f")
   end_program = time.perf_counter()
 
   # Print timings
-  print(f"Load lambda and lambda force trajectories: {end_load - start_load:10.2f}s")
-  print(f"Read A and b: {end_Ab_read - start_Ab_read:10.2f}s")
-  print(f"Accumulate into A and b: {end_accumulate -  start_accumulate:10.2f}s")
-  print(f"Write A and b: {end_Ab_write - start_Ab_write:10.2f}s")
-  print(f"Solve linear system: {end_solver - start_solver:10.2f}s")
-  print(f"Total program time: {end_program - start_program:10.2f}s")
+  print("Force Matching Timings:")
+  print(f"{end_load - start_load:7.1f}s    loading lambda and lambda force trajectories", file=fpout) # 4 spaces after 's'
+  print(f"{end_Ab_read - start_Ab_read:7.1f}s    reading A and b", file=fpout)
+  print(f"{end_accumulate -  start_accumulate:7.1f}s    accumulating into A and b", file=fpout)
+  print(f"{end_Ab_write - start_Ab_write:7.1f}s    writing A and b", file=fpout)
+  print(f"{end_solver - start_solver:7.1f}s    solving linear system", file=fpout)
+  print(f"{end_program - start_program:7.1f}s    total program time", file=fpout)
+
+  print(f"Total force matching program time: {end_program - start_program:10.1f}s")

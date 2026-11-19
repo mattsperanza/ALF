@@ -19,6 +19,8 @@ commands. For example at hpc3.rcic.uci.edu the following modules work
 
 module load cmake/3.20.5 cuda/11.7.1 gcc/11.2.0 openmpi/4.1.2/gcc.11.2.0 fftw/3.3.10/gcc.11.2.0-openmpi.4.1.2
 module load anaconda
+module unload openmpi/4.1.2/gcc.11.2.0
+module load openmpi/4.1.2/gcc.11.2.0
 
 Then perform the following commands to create a new python virtual environment
 named env-alf and build a copy of ALF in a directory named build

@@ -1,5 +1,30 @@
 #! /usr/bin/env python
 
+def Gimp_direct(alf_info):
+  import numpy as np
+  # Compute binning G_imp profile along exact direct paths (forcematch only works with fnpwise2026)
+  nsubs = np.array(alf_info['nsubs'])
+  blockBounds = np.hstack([[0], np.cumsum(nsubs)])
+  mc_Lambda = np.loadtxt("../G_imp/mc_Lambda.dat")
+  kT=0.001987*alf_info['temp']
+  for site in range(len(nsubs)):
+    mc_Site = mc_Lambda[:, blockBounds[site]:blockBounds[site+1]]
+    mc_Active = mc_Site > 0
+    n_active = np.sum(mc_Active > 0, axis=1)
+    mask = n_active == 2
+    mc_Site = mc_Site[mask]
+    mc_Active = mc_Active[mask]
+    cols = np.nonzero(mc_Active)[1].reshape(-1, 2)  # (i, j) with i < j for every frame
+    lam = np.take_along_axis(mc_Site, cols, axis=1)[:, 1] # lj, li+lj=1, j>i, profile is symmetric, so this choice doesn't matter
+    nbins = 128 # want enough bins to make binning assumptions valid
+    counts, _ = np.histogram(lam, bins=nbins, range=(0.0, 1.0))
+    counts = counts.astype(np.float32)
+    Gimp = np.full_like(counts, np.inf)
+    mask = counts > 0
+    Gimp[mask] = -kT*np.log(counts[mask])
+    np.savetxt(f"../G_imp/direct_site{site}.dat", Gimp, fmt="%8.5f")
+
+
 def SetGimp(alf_info):
   """
   Creates the G_imp directory
@@ -17,9 +42,10 @@ def SetGimp(alf_info):
 
   import os, shutil, os.path
   import subprocess
+  import numpy as np
 
   # Don't generate G_imp if using custom implicit constraints, the user will supply it
-  if alf_info['impcons']=='custom' or alf_info['loss']=='forcematch2026':
+  if alf_info['impcons']=='custom':
     return
 
   if not os.path.exists('../G_imp'):
@@ -29,13 +55,20 @@ def SetGimp(alf_info):
   fperr=open('../G_imp/error','w')
   if alf_info['loss']=='linear2018':
     nbins2=20
-  elif alf_info['loss']=='nonlinear2024':
+  elif alf_info['loss']=='nonlinear2024' or alf_info['loss']=='forcematch2026':
     nbins2=16
   if alf_info['impcons'] in ['fnex2011','fnexdozen2024']:
     options=[str(alf_info['impconsopt']['c'])]
   elif alf_info['impcons']=='fnpwise2026':
     options=[str(alf_info['impconsopt']['kbeta']),str(alf_info['impconsopt']['width'])]
-  subprocess.call(['time',os.path.dirname(__file__)+'/bin/impcons',str(10000000),'gimp',str(nbins2),alf_info['impcons']]+options,stdout=fpout,stderr=fperr)
+
+  if alf_info['loss']=='linear2018' or alf_info['loss']=='nonlinear2024':
+    subprocess.call(['time',os.path.dirname(__file__)+'/bin/impcons',str(10000000),'gimp',str(nbins2),alf_info['impcons']]+options,stdout=fpout,stderr=fperr)
+  else: # Building direct path Gimp profile doesn't require as many samples
+    subprocess.call(['time',os.path.dirname(__file__)+'/bin/impcons',str(1000000),'sample',alf_info['impcons']]+options,stdout=fpout,stderr=fperr)
+    shutil.move("mc_Lambda.dat", "../G_imp/mc_Lambda.dat")
+    Gimp_direct(alf_info)
+
   fpout.close()
   fperr.close()
 
@@ -179,6 +212,12 @@ def nonlinear2024(alf_info,N,ntersite,fpout,fperr):
   # Run loss function
   subprocess.call(['time',os.path.dirname(__file__)+'/bin/nonlinear2024',alf_info['bias'],str(alf_info['temp']),str(ntersite[0]),str(ntersite[1])],stdout=fpout,stderr=fperr)
 
-def forceMatch2026(alf_info,i):
+def forceMatch2026(alf_info,i,N,ntersite,fpout,fperr):
   import alf
-  alf.forceMatch(alf_info, i)
+  import subprocess
+  import os
+
+  # Run wham and get the weights
+  subprocess.call(['time',os.path.dirname(__file__)+'/bin/whamweight',str(N*alf_info['nreps']),str(alf_info['temp']),str(ntersite[0]),str(ntersite[1])],stdout=fpout,stderr=fperr)
+
+  alf.forceMatch(alf_info, i, fpout, fperr)
