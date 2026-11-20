@@ -46,7 +46,7 @@ def build_alpha(alf_info, analysis_dir, nblocks, n_basis, n_quad):
   # build alpha vector definition
   alpha0 = np.zeros(n_basis)
   bound = 0
-  basis_bounds = [0]
+  basis_bounds = [0] # [bi, bf, cf, xf, sf]
   basis_identity = np.full((n_basis,), "", dtype="<U3")
   # b -> bi*li
   alpha0[0:nblocks]=b
@@ -105,7 +105,7 @@ def map_block_to_alpha(nblocks, per_path, n_basis, basis_bounds):
   assert (counts[:nblocks] == 1).all() and (counts[nblocks:] == 2).all()
   lin_terms = counts == 1
   basis_substituents[lin_terms, 1] = basis_substituents[lin_terms, 0]
-  return basis_substituents, connected_indices
+  return basis_substituents, connected_indices, quad_indices
 
 # File reading for force matching
 def read_FM_data(analysis_dir, ndupl, nreps, skipFM):
@@ -181,6 +181,25 @@ def accumulate_FM_data(alf_info, A, bvec, L_traj, dUdL_traj, nblocks, n_basis, b
     sl = slice(lo, lo + chunk)
     accumulate(L_traj[sl], dUdL_traj[sl], A, bvec)
 
+# Histogram FE vs. linear b cefficient loss
+def endstate_histogram(n_min, nblocks, kT, k_hist, A, bvec, alpha0, endstate_counts, endstate_weights, fpout):
+  actives_mask = (endstate_counts >= n_min) & (endstate_weights > 0)
+  idx = np.flatnonzero(actives_mask)
+  num_actives = len(idx)
+  if num_actives > 1:
+    kh_endstate = k_hist / num_actives # Ensure weight of entire histogram term is k_hist
+    # Histogram k_hist*(a-a0 + F + G)^2
+    F = np.where(actives_mask, -kT*np.log(np.where(actives_mask, endstate_weights, 1)), 0)
+    print(f"Histogram excess Fi: {np.where(actives_mask, F, np.nan)}", file=fpout)
+    F += np.where(actives_mask, alpha0[:nblocks], 0)
+    F = np.where(actives_mask, F - F[idx].mean(), 0)
+    A_hist = np.zeros((nblocks, nblocks))
+    A_hist[np.ix_(idx, idx)] = -kh_endstate/num_actives
+    A_hist[idx, idx] += kh_endstate
+    b_hist = kh_endstate*F 
+
+    A[0:nblocks, 0:nblocks] += A_hist
+    bvec[0:nblocks] += b_hist
 
 def forceMatch(alf_info, Ff, fpout, fperr, verbose=True):
   start_program = time.perf_counter()
@@ -199,9 +218,9 @@ def forceMatch(alf_info, Ff, fpout, fperr, verbose=True):
   skipFM = 1                  # Frame skipping (skipping potentially saves lots of time without sacrificing fit)
   max_n_active = nblocks      # Filter out samples with more than this many n_active
   n_min = 10                  # Threshold for "being sampled"
-  d = .95                     # Exponential Decay Base
-  k_forceMatch = .8           # Force sample weight
-  k_hist = .2                 # Endstate updates
+  d = .97                     # Exponential Decay Base
+  k_forceMatch = .7           # Force sample weight
+  k_hist = .3                 # Endstate updates
   k0 = 0.01                   # Fraction of nonlinear ALF's regularization
   k0_by_type = {"b":  k0/4, "c":  k0/64, "xu": k0/4, "xl": k0/4,"su": k0, "sl": k0}
 
@@ -210,7 +229,7 @@ def forceMatch(alf_info, Ff, fpout, fperr, verbose=True):
   per_path = 5 if alf_info['bias'] == 'bcxs2018' else 7
   n_basis = n_linear+per_path*n_quad
   alpha0, basis_identity, basis_bounds, basis_masks = build_alpha(alf_info, analysis_dir, nblocks, n_basis, n_quad)
-  basis_substituents, connected_indices = map_block_to_alpha(nblocks, per_path, n_basis, basis_bounds)
+  basis_substituents, connected_indices, quad_indices = map_block_to_alpha(nblocks, per_path, n_basis, basis_bounds)
 
   ###################
   ## Data Matrix  ###
@@ -274,11 +293,12 @@ def forceMatch(alf_info, Ff, fpout, fperr, verbose=True):
   # Scale history (after saving) so all force samples have a fixed weight reguardless of the number of samples
   scale = k_forceMatch / max(accumulated_count[0], 1.0)
   A *= scale; bvec *= scale;
-  # Remove A and b from analysis{Ff-2} to save space for larger A files
-  if os.path.exists(f"../analysis{Ff-2}/Amat.dat"):
-    os.remove(f"../analysis{Ff-2}/Amat.dat")
-  if os.path.exists(f"../analysis{Ff-2}/bvec.dat"):
-    os.remove(f"../analysis{Ff-2}/bvec.dat")
+  # Remove A and b from analysis{Ff-n_Amats} to save space
+  n_Amats = 4 # Leave multiple in case we mess something up
+  if os.path.exists(f"../analysis{Ff-n_Amats}/Amat.dat"):
+    os.remove(f"../analysis{Ff-n_Amats}/Amat.dat")
+  if os.path.exists(f"../analysis{Ff-n_Amats}/bvec.dat"):
+    os.remove(f"../analysis{Ff-n_Amats}/bvec.dat")
   end_Ab_write = time.perf_counter()
 
   ###################
@@ -294,30 +314,84 @@ def forceMatch(alf_info, Ff, fpout, fperr, verbose=True):
   weights /= np.sum(weights) # Weights need to be normalized
   actives = L_traj > 0
   n_actives = np.sum(actives, axis=1)
+
+  # Endstate histogram
   endstate_mask = n_actives == 1
   endstate_counts = np.sum(L_traj[endstate_mask], axis=0)
-  # sum_t w_{Kt} I_{i}
   endstate_weights = np.sum(actives[endstate_mask]*weights[endstate_mask, None], axis=0)
   print(f"Histogram FE Endstate Counts: {endstate_counts}", file=fpout)
   print(f"Histogram FE Endstate weights: {endstate_weights}", file=fpout)
-  # Histogram FE vs. linear b cefficient loss
-  actives_mask = (endstate_counts >= n_min) & (endstate_weights > 0)
-  idx = np.flatnonzero(actives_mask)
-  num_actives = len(idx)
-  if num_actives > 1:
-    # Histogram k_hist*(a0 + F - a + G)^2
-    F = np.where(actives_mask, -kT*np.log(np.where(actives_mask, endstate_weights, 1)), 0)
-    print(f"Histogram excess Fi: {np.where(actives_mask, F, np.nan)}", file=fpout)
-    F += np.where(actives_mask, alpha0[:nblocks], 0)
-    F = np.where(actives_mask, F - F[idx].mean(), 0)
-    A_hist = np.zeros((nblocks, nblocks))
-    A_hist[np.ix_(idx, idx)] = -k_hist/num_actives
-    A_hist[idx, idx] += k_hist
-    b_hist = k_hist*F 
+  endstate_histogram(n_min, nblocks, kT, k_hist, A, bvec, alpha0, endstate_counts, endstate_weights, fpout)
 
-    A[0:nblocks, 0:nblocks] += A_hist
-    bvec[0:nblocks] += b_hist
-  # TODO: Direct path histogram FE loss with MBAR weights? Is this required?
+  # Direct path histogram
+  path_mask = n_actives == 2
+  path_traj = L_traj[path_mask]
+  path_actives = actives[path_mask]
+  path_weights = weights[path_mask]
+  cols = np.nonzero(path_actives)[1].reshape(-1, 2) # (i, j) with i<j
+  lam = np.take_along_axis(path_traj, cols, axis=1)[:, 1] # i->j path, li=1 --> lj=1
+  npaths = nblocks*(nblocks-1)//2
+  ii, jj = np.triu_indices(nblocks, k=1)
+  pid = quad_indices[cols[:, 0], cols[:, 1]] # Which path each sample is on
+  bin = np.clip(np.floor(lam*NBINS_FM_HIST).astype(np.intp), 0, NBINS_FM_HIST-1)
+  flat_path_bins = pid*NBINS_FM_HIST + bin
+  path_Gimp = Path("../G_imp/direct_site0.dat")
+  if not path_Gimp.is_file():
+    print("Cannot find file ../G_imp/direct_site0.dat!",file=fpout)
+    quit(1)
+  G_imp = np.loadtxt(path_Gimp, ndmin=1, dtype=np.float64) # Single path
+  assert G_imp.shape == (NBINS_FM_HIST,)
+  bin_counts = np.bincount(flat_path_bins, minlength=npaths*NBINS_FM_HIST).astype(np.float64).reshape(npaths, NBINS_FM_HIST)
+  bin_weights = np.bincount(flat_path_bins, weights=path_weights,minlength=npaths*NBINS_FM_HIST).astype(np.float64).reshape(npaths, NBINS_FM_HIST)
+  active_all = (bin_counts >= n_min) & (bin_weights > 0)   # (npaths, NBINS)
+  usable = active_all.sum(axis=1) >= 2                     # paths with enough bins to center
+  n_total = active_all[usable].sum()
+  kh_path = k_hist / max(n_total, 1.0)
+  # Precompute basis function values
+  lj = np.linspace(0, 1, NBINS_FM_HIST+1)[:-1] + 1/(2*NBINS_FM_HIST)
+  li = 1-lj
+  basis_lookup = np.zeros((7, NBINS_FM_HIST), dtype=np.float64)
+  basis_lookup[0, :] = li
+  basis_lookup[1, :] = lj
+  basis_lookup[2, :] = lj*li
+  basis_lookup[3, :] = (1-np.exp(-5.56*li))*lj
+  basis_lookup[4, :] = (1-np.exp(-5.56*lj))*li
+  basis_lookup[5, :] = li*lj/(li+0.017) # TODO: Change alpha for bcxstu
+  basis_lookup[6, :] = li*lj/(lj+0.017)
+  for p in range(npaths):
+    if not usable[p]:
+      continue
+    active_bins = active_all[p]
+    i = ii[p]; j = jj[p]
+    # 2 linear, 1 quad, 2 skew, 2 endpoint, (+4 for bcxstu) 
+    shared_indices = np.zeros(7, dtype=np.int32)
+    shared_indices[0] = i # 1st linear
+    shared_indices[1] = j # 2nd linear
+    shared_indices[2] = basis_bounds[1] + quad_indices[i, j] # 1 quad
+    shared_indices[3] = basis_bounds[2] + quad_indices[i, j] # 1st skew
+    shared_indices[4] = basis_bounds[2] + quad_indices[j, i] # 2nd skew
+    shared_indices[5] = basis_bounds[3] + quad_indices[i, j] # 1st endpoint
+    shared_indices[6] = basis_bounds[3] + quad_indices[j, i] # 2nd endpoint
+    shared_coeff = alpha0[shared_indices]
+
+    G_hist = -kT*np.log(bin_weights[p, active_bins])
+    G_excess = G_hist - G_imp[active_bins]
+    G_tilde = G_excess - np.average(G_excess)
+    basis_avg = np.average(basis_lookup[:, active_bins], axis=1)
+    for k in range(shared_indices.shape[0]):
+      alpha_k = shared_coeff[k]
+      alpha_kid = shared_indices[k]
+      bvec[alpha_kid] += kh_path*np.dot(G_tilde, basis_lookup[k, active_bins])
+      for l in range(k, shared_indices.shape[0]):
+        alpha_l = shared_coeff[l]
+        alpha_lid = shared_indices[l]
+        dot = np.dot(basis_lookup[k, active_bins] - basis_avg[k], basis_lookup[l, active_bins] - basis_avg[l])
+        A[alpha_kid, alpha_lid] += kh_path*dot
+        bvec[alpha_kid] += kh_path*alpha_l*dot
+        if k != l:
+          A[alpha_lid, alpha_kid] += kh_path*dot
+          bvec[alpha_lid] += kh_path*alpha_k*dot
+
   end_histogram_loss = time.perf_counter()
 
   ###################

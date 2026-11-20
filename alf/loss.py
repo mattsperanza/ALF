@@ -1,8 +1,8 @@
 #! /usr/bin/env python
 
+# TODO: Put into forceMatch.py file
 def Gimp_direct(alf_info):
   import numpy as np
-  from forceMatch import NBINS_FM_HIST
   # Compute binning G_imp profile along exact direct paths (forcematch only works with fnpwise2026)
   nsubs = np.array(alf_info['nsubs'])
   blockBounds = np.hstack([[0], np.cumsum(nsubs)])
@@ -17,13 +17,13 @@ def Gimp_direct(alf_info):
     mc_Active = mc_Active[mask]
     cols = np.nonzero(mc_Active)[1].reshape(-1, 2)  # (i, j) with i < j for every frame
     lam = np.take_along_axis(mc_Site, cols, axis=1)[:, 1] # lj, li+lj=1, j>i, profile is symmetric, so this choice doesn't matter
-    nbins = NBINS_FM_HIST # want enough bins to make binning assumptions valid
+    nbins = 128 # want enough bins to make binning assumptions valid
     counts, _ = np.histogram(lam, bins=nbins, range=(0.0, 1.0))
-    counts = counts.astype(np.float32)
+    counts = counts.astype(np.float64)
     Gimp = np.full_like(counts, np.inf)
     mask = counts > 0
     Gimp[mask] = -kT*np.log(counts[mask])
-    np.savetxt(f"../G_imp/direct_site{site}.dat", Gimp, fmt="%8.5f")
+    np.savetxt(f"../G_imp/direct_site{site}.dat", Gimp, fmt="%.17e")
 
 
 def SetGimp(alf_info):
@@ -66,6 +66,7 @@ def SetGimp(alf_info):
   if alf_info['loss']=='linear2018' or alf_info['loss']=='nonlinear2024':
     subprocess.call(['time',os.path.dirname(__file__)+'/bin/impcons',str(10000000),'gimp',str(nbins2),alf_info['impcons']]+options,stdout=fpout,stderr=fperr)
   else: # Building direct path Gimp profile doesn't require as many samples
+    # Calling this without building gimp causes WHAM to fail, but only after it generates the weights :)
     subprocess.call(['time',os.path.dirname(__file__)+'/bin/impcons',str(1000000),'sample',alf_info['impcons']]+options,stdout=fpout,stderr=fperr)
     shutil.move("mc_Lambda.dat", "../G_imp/mc_Lambda.dat")
     Gimp_direct(alf_info)
@@ -219,6 +220,7 @@ def forceMatch2026(alf_info,i,N,ntersite,fpout,fperr):
   import os
 
   # Run wham and get the weights
+  # impcons wasn't called in gimp mode, so FE profiles weren't created, causing WHAM to fail but only after generating f.dat and weight.dat :)
   subprocess.call(['time',os.path.dirname(__file__)+'/bin/whamweight',str(N*alf_info['nreps']),str(alf_info['temp']),str(ntersite[0]),str(ntersite[1])],stdout=fpout,stderr=fperr)
 
   alf.forceMatch(alf_info, i, fpout, fperr)
